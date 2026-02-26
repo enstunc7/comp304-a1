@@ -511,8 +511,14 @@ int process_command(struct command_t *command)
   }
   else
   {
-    // TODO: implement background processes here
-    wait(0); // wait for child process to finish
+    // Eğer komut background olarak çalıştırılacaksa parent beklemez.
+    if (command->background)
+    {
+      return SUCCESS;
+    }
+
+    // Foreground komutlarda parent, child process'in bitmesini bekler.
+    waitpid(pid, NULL, 0);
     return SUCCESS;
   }
 }
