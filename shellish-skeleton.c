@@ -305,6 +305,109 @@ int prompt(struct command_t *command) {
   tcsetattr(STDIN_FILENO, TCSANOW, &backup_termios);
   return SUCCESS;
 }
+/*
+ * Bu fonksiyon, kullanıcıdan gelen komutun çalıştırılabilir dosya yolunu bulur.
+ *
+ * Amaç:
+ * - Eğer komut zaten bir path içeriyorsa (örn: /bin/ls veya ./a.out),
+ *   doğrudan onun çalıştırılabilir olup olmadığını kontrol etmek
+ * - Eğer komut sadece isim olarak geldiyse (örn: ls),
+ *   PATH ortam değişkenindeki klasörlerin içinde sırayla aramak
+ *
+ * Dönüş değeri:
+ * - Komut bulunursa çalıştırılabilir dosyanın tam yolunu döndürür
+ *   (örn: /usr/bin/ls)
+ * - Bulunamazsa NULL döndürür
+ *
+ * Not:
+ * - Dönen string dinamik olarak ayrılmıştır (malloc / strdup).
+ * - İş bittikten sonra free() ile serbest bırakılmalıdır.
+ */
+char *resolve_executable_path(const char *cmd) {
+  // Eğer komut NULL ise veya boş string ise arama yapamayız.
+  if (cmd == NULL || strlen(cmd) == 0)
+    return NULL;
+
+  // Eğer komutun içinde '/' karakteri varsa, bu komut büyük ihtimalle
+  // zaten bir path olarak verilmiştir. (/bin/ls, ./program, ../test/a.out)
+  if (strchr(cmd, '/')) {
+    // access(..., X_OK) dosyanın çalıştırılabilir olup olmadığını kontrol eder.
+    if (access(cmd, X_OK) == 0)
+      // Çalıştırılabiliyorsa bu path'in bir kopyasını döndür.
+      return strdup(cmd);
+
+    // Çalıştırılamıyorsa bulunamadı gibi davran.
+    return NULL;
+  }
+
+  // PATH ortam değişkenini al.
+  // PATH içinde komutların aranacağı klasörler bulunur.
+  // Örnek:
+  // /usr/local/bin:/usr/bin:/bin
+  char *path_env = getenv("PATH");
+
+  // Eğer PATH yoksa arama yapamayız.
+  if (path_env == NULL)
+    return NULL;
+
+  // strtok string'i değiştirdiği için PATH'in direkt kendisini parçalamıyoruz.
+  // Önce bir kopyasını alıyoruz.
+  char *path_copy = strdup(path_env);
+
+  // Kopya oluşturulamadıysa NULL dön.
+  if (path_copy == NULL)
+    return NULL;
+
+  // PATH'i ':' karakterine göre parçala.
+  // İlk klasörü al.
+  char *dir = strtok(path_copy, ":");
+
+  // Tüm PATH klasörlerinde sırayla dolaş.
+  while (dir != NULL) {
+    // Oluşturacağımız tam path için gerekli uzunluğu hesapla.
+    // +2 sebebi:
+    // 1 karakter '/' için
+    // 1 karakter '\0' string sonu için
+    size_t full_len = strlen(dir) + strlen(cmd) + 2;
+
+    // Tam path string'i için bellek ayır.
+    char *full_path = (char *)malloc(full_len);
+
+    // Bellek ayrılamadıysa önce path_copy'yi temizle, sonra çık.
+    if (full_path == NULL) {
+      free(path_copy);
+      return NULL;
+    }
+
+    // "klasör/komut" şeklinde tam path oluştur.
+    // Örnek:
+    // dir = /usr/bin
+    // cmd = ls
+    // sonuç = /usr/bin/ls
+    snprintf(full_path, full_len, "%s/%s", dir, cmd);
+
+    // Oluşturulan dosya gerçekten çalıştırılabilir mi kontrol et.
+    if (access(full_path, X_OK) == 0) {
+      // PATH kopyasına artık ihtiyaç yok, temizle.
+      free(path_copy);
+
+      // Bulduğumuz tam yolu döndür.
+      return full_path;
+    }
+
+    // Bu klasörde bulunamadıysa bu path'i temizle.
+    free(full_path);
+
+    // PATH içindeki bir sonraki klasöre geç.
+    dir = strtok(NULL, ":");
+  }
+
+  // Hiçbir klasörde bulunamadıysa PATH kopyasını temizle.
+  free(path_copy);
+
+  // Komut bulunamadı.
+  return NULL;
+}
 
 int process_command(struct command_t *command) {
   int r;
