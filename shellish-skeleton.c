@@ -8,13 +8,15 @@
 #include <unistd.h>
 const char *sysname = "shellish";
 
-enum return_codes {
+enum return_codes
+{
   SUCCESS = 0,
   EXIT = 1,
   UNKNOWN = 2,
 };
 
-struct command_t {
+struct command_t
+{
   char *name;
   bool background;
   bool auto_complete;
@@ -28,7 +30,8 @@ struct command_t {
  * Prints a command struct
  * @param struct command_t *
  */
-void print_command(struct command_t *command) {
+void print_command(struct command_t *command)
+{
   int i = 0;
   printf("Command: <%s>\n", command->name);
   printf("\tIs Background: %s\n", command->background ? "yes" : "no");
@@ -40,7 +43,8 @@ void print_command(struct command_t *command) {
   printf("\tArguments (%d):\n", command->arg_count);
   for (i = 0; i < command->arg_count; ++i)
     printf("\t\tArg %d: %s\n", i, command->args[i]);
-  if (command->next) {
+  if (command->next)
+  {
     printf("\tPiped to:\n");
     print_command(command->next);
   }
@@ -51,8 +55,10 @@ void print_command(struct command_t *command) {
  * @param  command [description]
  * @return         [description]
  */
-int free_command(struct command_t *command) {
-  if (command->arg_count) {
+int free_command(struct command_t *command)
+{
+  if (command->arg_count)
+  {
     for (int i = 0; i < command->arg_count; ++i)
       free(command->args[i]);
     free(command->args);
@@ -60,7 +66,8 @@ int free_command(struct command_t *command) {
   for (int i = 0; i < 3; ++i)
     if (command->redirects[i])
       free(command->redirects[i]);
-  if (command->next) {
+  if (command->next)
+  {
     free_command(command->next);
     command->next = NULL;
   }
@@ -73,7 +80,8 @@ int free_command(struct command_t *command) {
  * Show the command prompt
  * @return [description]
  */
-int show_prompt() {
+int show_prompt()
+{
   char cwd[1024], hostname[1024];
   gethostname(hostname, sizeof(hostname));
   getcwd(cwd, sizeof(cwd));
@@ -87,7 +95,8 @@ int show_prompt() {
  * @param  command [description]
  * @return         0
  */
-int parse_command(char *buf, struct command_t *command) {
+int parse_command(char *buf, struct command_t *command)
+{
   const char *splitters = " \t"; // split at whitespace
   int index, len;
   len = strlen(buf);
@@ -105,10 +114,13 @@ int parse_command(char *buf, struct command_t *command) {
     command->background = true;
 
   char *pch = strtok(buf, splitters);
-  if (pch == NULL) {
+  if (pch == NULL)
+  {
     command->name = (char *)malloc(1);
     command->name[0] = 0;
-  } else {
+  }
+  else
+  {
     command->name = (char *)malloc(strlen(pch) + 1);
     strcpy(command->name, pch);
   }
@@ -118,7 +130,8 @@ int parse_command(char *buf, struct command_t *command) {
   int redirect_index;
   int arg_index = 0;
   char temp_buf[1024], *arg;
-  while (1) {
+  while (1)
+  {
     // tokenize input on splitters
     pch = strtok(NULL, splitters);
     if (!pch)
@@ -128,7 +141,7 @@ int parse_command(char *buf, struct command_t *command) {
     len = strlen(arg);
 
     if (len == 0)
-      continue; // empty arg, go for next
+      continue;                                          // empty arg, go for next
     while (len > 0 && strchr(splitters, arg[0]) != NULL) // trim left whitespace
     {
       arg++;
@@ -140,7 +153,8 @@ int parse_command(char *buf, struct command_t *command) {
       continue; // empty arg, go for next
 
     // piping to another command
-    if (strcmp(arg, "|") == 0) {
+    if (strcmp(arg, "|") == 0)
+    {
       struct command_t *c =
           (struct command_t *)malloc(sizeof(struct command_t));
       int l = strlen(pch);
@@ -163,15 +177,19 @@ int parse_command(char *buf, struct command_t *command) {
     redirect_index = -1;
     if (arg[0] == '<')
       redirect_index = 0;
-    if (arg[0] == '>') {
-      if (len > 1 && arg[1] == '>') {
+    if (arg[0] == '>')
+    {
+      if (len > 1 && arg[1] == '>')
+      {
         redirect_index = 2;
         arg++;
         len--;
-      } else
+      }
+      else
         redirect_index = 1;
     }
-    if (redirect_index != -1) {
+    if (redirect_index != -1)
+    {
       command->redirects[redirect_index] = (char *)malloc(len);
       strcpy(command->redirects[redirect_index], arg + 1);
       continue;
@@ -208,7 +226,8 @@ int parse_command(char *buf, struct command_t *command) {
   return 0;
 }
 
-void prompt_backspace() {
+void prompt_backspace()
+{
   putchar(8);   // go back 1
   putchar(' '); // write empty over
   putchar(8);   // go back 1 again
@@ -220,7 +239,8 @@ void prompt_backspace() {
  * @param  buf_size [description]
  * @return          [description]
  */
-int prompt(struct command_t *command) {
+int prompt(struct command_t *command)
+{
   int index = 0;
   char c;
   char buf[4096];
@@ -243,7 +263,8 @@ int prompt(struct command_t *command) {
 
   show_prompt();
   buf[0] = 0;
-  while (1) {
+  while (1)
+  {
     c = getchar();
     // printf("Keycode: %u\n", c); // DEBUG: uncomment for debugging
 
@@ -255,20 +276,23 @@ int prompt(struct command_t *command) {
 
     if (c == 127) // handle backspace
     {
-      if (index > 0) {
+      if (index > 0)
+      {
         prompt_backspace();
         index--;
       }
       continue;
     }
 
-    if (c == 27 || c == 91 || c == 66 || c == 67 || c == 68) {
+    if (c == 27 || c == 91 || c == 66 || c == 67 || c == 68)
+    {
       continue;
     }
 
     if (c == 65) // up arrow
     {
-      while (index > 0) {
+      while (index > 0)
+      {
         prompt_backspace();
         index--;
       }
@@ -323,14 +347,16 @@ int prompt(struct command_t *command) {
  * - Dönen string dinamik olarak ayrılmıştır (malloc / strdup).
  * - İş bittikten sonra free() ile serbest bırakılmalıdır.
  */
-char *resolve_executable_path(const char *cmd) {
+char *resolve_executable_path(const char *cmd)
+{
   // Eğer komut NULL ise veya boş string ise arama yapamayız.
   if (cmd == NULL || strlen(cmd) == 0)
     return NULL;
 
   // Eğer komutun içinde '/' karakteri varsa, bu komut büyük ihtimalle
   // zaten bir path olarak verilmiştir. (/bin/ls, ./program, ../test/a.out)
-  if (strchr(cmd, '/')) {
+  if (strchr(cmd, '/'))
+  {
     // access(..., X_OK) dosyanın çalıştırılabilir olup olmadığını kontrol eder.
     if (access(cmd, X_OK) == 0)
       // Çalıştırılabiliyorsa bu path'in bir kopyasını döndür.
@@ -363,7 +389,8 @@ char *resolve_executable_path(const char *cmd) {
   char *dir = strtok(path_copy, ":");
 
   // Tüm PATH klasörlerinde sırayla dolaş.
-  while (dir != NULL) {
+  while (dir != NULL)
+  {
     // Oluşturacağımız tam path için gerekli uzunluğu hesapla.
     // +2 sebebi:
     // 1 karakter '/' için
@@ -374,7 +401,8 @@ char *resolve_executable_path(const char *cmd) {
     char *full_path = (char *)malloc(full_len);
 
     // Bellek ayrılamadıysa önce path_copy'yi temizle, sonra çık.
-    if (full_path == NULL) {
+    if (full_path == NULL)
+    {
       free(path_copy);
       return NULL;
     }
@@ -387,7 +415,8 @@ char *resolve_executable_path(const char *cmd) {
     snprintf(full_path, full_len, "%s/%s", dir, cmd);
 
     // Oluşturulan dosya gerçekten çalıştırılabilir mi kontrol et.
-    if (access(full_path, X_OK) == 0) {
+    if (access(full_path, X_OK) == 0)
+    {
       // PATH kopyasına artık ihtiyaç yok, temizle.
       free(path_copy);
 
@@ -409,7 +438,8 @@ char *resolve_executable_path(const char *cmd) {
   return NULL;
 }
 
-int process_command(struct command_t *command) {
+int process_command(struct command_t *command)
+{
   int r;
   if (strcmp(command->name, "") == 0)
     return SUCCESS;
@@ -417,8 +447,10 @@ int process_command(struct command_t *command) {
   if (strcmp(command->name, "exit") == 0)
     return EXIT;
 
-  if (strcmp(command->name, "cd") == 0) {
-    if (command->arg_count > 0) {
+  if (strcmp(command->name, "cd") == 0)
+  {
+    if (command->arg_count > 0)
+    {
       r = chdir(command->args[1]);
       if (r == -1)
         printf("-%s: %s: %s\n", sysname, command->name, strerror(errno));
@@ -439,18 +471,56 @@ int process_command(struct command_t *command) {
 
     // TODO: do your own exec with path resolving using execv()
     // do so by replacing the execvp call below
-    execvp(command->name, command->args); // exec+args+path
-    printf("-%s: %s: command not found\n", sysname, command->name);
+    // Kullanıcının yazdığı komutun gerçek çalıştırılabilir dosya yolunu bul.
+    // Örnek:
+    // "ls"   -> "/usr/bin/ls"
+    // "date" -> "/usr/bin/date"
+    // "./a.out" -> "./a.out" (eğer çalıştırılabilirse)
+    char *resolved_path = resolve_executable_path(command->name);
+
+    // Eğer komut PATH içinde veya verilen path'te bulunamadıysa,
+    // kullanıcıya "command not found" mesajı ver ve child process'i hata koduyla bitir.
+    if (resolved_path == NULL)
+    {
+      printf("-%s: %s: command not found\n", sysname, command->name);
+      exit(127);
+    }
+
+    // Komutun gerçek path'i bulunduysa execv ile çalıştır.
+    // resolved_path tam dosya yoludur.
+    // command->args ise argüman listesidir.
+    // Örnek:
+    // execv("/usr/bin/ls", ["ls", "-l", NULL]);
+    execv(resolved_path, command->args);
+
+    /*
+     * Eğer execv başarılı olursa bu satırların altına asla gelinmez.
+     * Çünkü child process artık eski kodu bırakır ve yeni programı çalıştırmaya başlar.
+     *
+     * Eğer buraya gelindiyse execv başarısız olmuş demektir.
+     * Bu durumda hata mesajını yazdırıyoruz.
+     */
+    printf("-%s: %s: %s\n", sysname, command->name, strerror(errno));
+
+    // resolve_executable_path içinde dinamik bellek ayırdığımız için
+    // execv başarısız olursa burada belleği serbest bırakıyoruz.
+    free(resolved_path);
+
+    // Child process'i hata kodu ile sonlandır.
     exit(127);
-  } else {
+  }
+  else
+  {
     // TODO: implement background processes here
     wait(0); // wait for child process to finish
     return SUCCESS;
   }
 }
 
-int main() {
-  while (1) {
+int main()
+{
+  while (1)
+  {
     struct command_t *command =
         (struct command_t *)malloc(sizeof(struct command_t));
     memset(command, 0, sizeof(struct command_t)); // set all bytes to 0
