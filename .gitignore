@@ -1,0 +1,22 @@
+# Compiled binaries
+a.out
+shell-ish
+
+# Object files
+*.o
+
+# Debug / profiling
+*.gch
+*.out
+*.dSYM/
+
+# Editor / OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Optional build folders
+build/
+dist/
