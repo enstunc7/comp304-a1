@@ -7,6 +7,10 @@
 #include <termios.h> // termios, TCSANOW, ECHO, ICANON
 #include <unistd.h>
 #include <fcntl.h> // open(), O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND
+
+#include <dirent.h>    // opendir, readdir
+#include <signal.h>    // kill, SIGTERM
+#include <sys/stat.h>  // mkdir, mkfifo
 const char *sysname = "shellish";
 
 enum return_codes
