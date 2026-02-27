@@ -439,6 +439,13 @@ char *resolve_executable_path(const char *cmd)
   return NULL;
 }
 
+
+// Builtin kontrol fonksiyonu (cut/help/chatroom gibi komutlar builtin mi?)
+bool is_builtin_child(const char *name);
+
+// Builtin komut çalıştırma fonksiyonu (child içinde çağrılacak)
+int run_builtin_child(struct command_t *command);
+
 // PIPELINE çalıştırır: cmd1 | cmd2 | cmd3 ... (command->next zinciri)
 // Her komut için child process oluşturur ve pipe ile birbirine bağlar.
 int execute_pipeline(struct command_t *cmd)
@@ -499,6 +506,13 @@ int execute_pipeline(struct command_t *cmd)
       // Burada istersek redirection (<,>,>>) ile pipe'ı birlikte destekleyebiliriz.
       // Şimdilik sadece pipe mantığını çalıştırıyoruz.
 
+      // Eğer komut builtin ise (cut/help/chatroom), execv yerine builtin çalıştır
+      if (is_builtin_child(current->name))
+      {                                      // builtin mi kontrol et
+        int br = run_builtin_child(current); // builtin'i çalıştır
+        exit(br == SUCCESS ? 0 : 1);         // başarılıysa 0, değilse 1 ile çık
+      }
+
       // Komutun gerçek çalıştırılabilir yolunu PATH içinde bul
       char *resolved_path = resolve_executable_path(current->name);
       if (resolved_path == NULL)
@@ -547,6 +561,47 @@ int execute_pipeline(struct command_t *cmd)
   return SUCCESS; // pipeline başarıyla tamamlandı
 }
 
+// Builtin mi? (cut/chatroom/custom burada sayılacak)
+bool is_builtin_child(const char *name)
+{
+  if (!name)
+    return false;
+  return (strcmp(name, "cut") == 0) ||
+         (strcmp(name, "help") == 0) ||
+         (strcmp(name, "chatroom") == 0); // chatroom'u sonra yazacağız
+}
+
+// Builtin komutu çalıştırır (child içinde çağrılacak şekilde tasarlanır)
+// Başarılıysa SUCCESS, değilse UNKNOWN döner.
+int run_builtin_child(struct command_t *command);
+
+// Builtin komutları çalıştırır (child içinde çağrılır)
+// Not: Pipe içinde builtin çalıştırmak için exit kodu döndürür
+int run_builtin_child(struct command_t *command)
+{
+  // Güvenlik: command veya name yoksa hata dön
+  if (command == NULL || command->name == NULL)
+  {
+    return UNKNOWN; // builtin tanınmadı
+  }
+
+  // help builtin: desteklenen komutları ekrana basar
+  if (strcmp(command->name, "help") == 0)
+  {
+    printf("Shell-ish builtins:\n");                            // başlık yaz
+    printf("  cd <dir>\n");                                     // cd bilgisini yaz
+    printf("  exit\n");                                         // exit bilgisini yaz
+    printf("  cut -d X -f list   (or --delimiter/--fields)\n"); // cut bilgisini yaz
+    printf("  chatroom <room> <user>\n");                       // chatroom (sonra yazacağız)
+    printf("  help\n");                                         // help bilgisini yaz
+    return SUCCESS;                                             // başarıyla bitti
+  }
+
+  // cut builtin daha sonra eklenecek
+  // chatroom builtin daha sonra eklenecek
+  return UNKNOWN; // bu isimde builtin yok
+}
+
 int process_command(struct command_t *command)
 {
   int r;
@@ -565,6 +620,10 @@ int process_command(struct command_t *command)
         printf("-%s: %s: %s\n", sysname, command->name, strerror(errno));
       return SUCCESS;
     }
+  }
+    // help builtin: komut listesini bas (pipe olmadan da çalışsın)
+  if (strcmp(command->name, "help") == 0) {
+    return run_builtin_child(command);   // help'i çalıştır
   }
 
   // Eğer komut zinciri varsa (| kullanılmışsa), pipeline olarak çalıştır
