@@ -8,9 +8,9 @@
 #include <unistd.h>
 #include <fcntl.h> // open(), O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND
 
-#include <dirent.h>    // opendir, readdir
-#include <signal.h>    // kill, SIGTERM
-#include <sys/stat.h>  // mkdir, mkfifo
+#include <dirent.h>   // opendir, readdir
+#include <signal.h>   // kill, SIGTERM
+#include <sys/stat.h> // mkdir, mkfifo
 const char *sysname = "shellish";
 
 enum return_codes
@@ -781,6 +781,186 @@ int run_repeat_builtin(struct command_t *command)
   return SUCCESS;      // başarılı
 }
 
+// chatroom builtin: FIFO tabanlı basit chat
+int run_chatroom_builtin(struct command_t *command)
+{
+  // Kullanım kontrolü: chatroom <roomname> <username>
+  if (command->args[1] == NULL || command->args[2] == NULL)
+  {
+    printf("-%s: chatroom: usage: chatroom <roomname> <username>\n", sysname);
+    return UNKNOWN;
+  }
+
+  const char *room = command->args[1]; // oda adı
+  const char *user = command->args[2]; // kullanıcı adı
+
+  // Oda klasörü yolu: /tmp/chatroom-<room>
+  char room_dir[512];
+  snprintf(room_dir, sizeof(room_dir), "/tmp/chatroom-%s", room);
+
+  // Kullanıcının FIFO yolu: /tmp/chatroom-<room>/<username>
+  char my_fifo[512];
+  // my_fifo yolu buffer'a sığdı mı kontrol et
+  int n1 = snprintf(my_fifo, sizeof(my_fifo), "%s/%s", room_dir, user); // yolu yaz
+  if (n1 < 0 || n1 >= (int)sizeof(my_fifo))
+  {                                                    // sığmadıysa
+    printf("-%s: chatroom: path too long\n", sysname); // hata bas
+    return UNKNOWN;                                    // çık
+  }
+
+  // 1) Oda klasörünü oluştur (varsa sorun değil)
+  if (mkdir(room_dir, 0777) == -1)
+  { // klasör oluşturmayı dene
+    if (errno != EEXIST)
+    { // zaten varsa sorun değil
+      printf("-%s: chatroom: mkdir failed: %s\n", sysname, strerror(errno));
+      return UNKNOWN;
+    }
+  }
+
+  // 2) Kullanıcı FIFO'sunu oluştur (varsa sorun değil)
+  if (mkfifo(my_fifo, 0666) == -1)
+  { // fifo oluşturmayı dene
+    if (errno != EEXIST)
+    { // zaten varsa sorun değil
+      printf("-%s: chatroom: mkfifo failed: %s\n", sysname, strerror(errno));
+      return UNKNOWN;
+    }
+  }
+
+  // 3) Reader child: kendi FIFO'muzdan gelen mesajları okuyup ekrana basacak
+  pid_t reader_pid = fork(); // okuyucu process
+  if (reader_pid < 0)
+  {
+    printf("-%s: chatroom: fork failed: %s\n", sysname, strerror(errno));
+    return UNKNOWN;
+  }
+
+  if (reader_pid == 0)
+  {
+    // ===== CHILD (READER) =====
+
+    // FIFO'yu O_RDWR açıyoruz ki open bloklamasın ve read beklesin
+    int fd = open(my_fifo, O_RDWR); // hem okuma hem yazma aç
+    if (fd < 0)
+    {
+      printf("-%s: chatroom: open fifo failed: %s\n", sysname, strerror(errno));
+      exit(1);
+    }
+
+    char buf[1024]; // okuma bufferı
+    while (1)
+    {
+      ssize_t n = read(fd, buf, sizeof(buf) - 1); // fifo'dan oku
+      if (n > 0)
+      {
+        buf[n] = '\0';      // string sonu
+        fputs(buf, stdout); // ekrana bas
+        fflush(stdout);     // hemen göster
+      }
+      // n == 0 ise (EOF gibi) burada takılabilir; O_RDWR olduğundan genelde bekler
+      // n < 0 ise hata olabilir, devam et
+    }
+  }
+
+  // ===== PARENT (WRITER + INPUT LOOP) =====
+  printf("Entered chatroom '%s' as '%s'. Type /exit to leave.\n", room, user);
+
+  // Kullanıcıdan satır satır mesaj al
+  char *line = NULL; // getline buffer
+  size_t cap = 0;    // buffer kapasitesi
+
+  while (1)
+  {
+    printf("chat> "); // chat prompt
+    fflush(stdout);
+
+    ssize_t r = getline(&line, &cap, stdin); // kullanıcıdan oku
+    if (r == -1)
+    { // Ctrl+D / EOF
+      break;
+    }
+
+    // Satır sonundaki '\n' varsa temizle
+    if (r > 0 && line[r - 1] == '\n')
+    {
+      line[r - 1] = '\0';
+    }
+
+    // Çıkış komutu
+    if (strcmp(line, "/exit") == 0)
+    {
+      break;
+    }
+
+    // Gönderilecek mesaj formatı: "username: mesaj\n"
+    char msg[1200];
+    snprintf(msg, sizeof(msg), "%s: %s\n", user, line);
+
+    // Oda klasörünü aç, içindeki diğer FIFO'lara mesaj gönder
+    DIR *d = opendir(room_dir); // klasörü aç
+    if (d == NULL)
+    {
+      printf("-%s: chatroom: opendir failed: %s\n", sysname, strerror(errno));
+      continue;
+    }
+
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL)
+    { // tüm dosyaları gez
+      // "." ve ".." geç
+      if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+      {
+        continue;
+      }
+
+      // Kendi FIFO'na mesaj göndermeyelim
+      if (strcmp(ent->d_name, user) == 0)
+      {
+        continue;
+      }
+
+      // Hedef FIFO yolu
+      char target_fifo[512];
+      // target_fifo yolu buffer'a sığdı mı kontrol et
+      int n2 = snprintf(target_fifo, sizeof(target_fifo), "%s/%s", room_dir, ent->d_name); // yolu yaz
+      if (n2 < 0 || n2 >= (int)sizeof(target_fifo))
+      {           // sığmadıysa
+        continue; // bunu geç
+      }
+
+      // Her hedefe ayrı child ile yaz (ödev istiyordu)
+      pid_t wp = fork(); // writer child
+      if (wp == 0)
+      {
+        // Hedef FIFO'yu yazma modunda aç (non-blocking: karşı taraf yoksa takılmasın)
+        int wfd = open(target_fifo, O_WRONLY | O_NONBLOCK);
+        if (wfd >= 0)
+        {
+          write(wfd, msg, strlen(msg)); // mesajı yaz
+          close(wfd);                   // kapat
+        }
+        exit(0); // writer child çık
+      }
+      // parent burada beklemiyor (çok child olursa zombie olabilir; basitçe ignore edebiliriz)
+    }
+
+    closedir(d); // klasörü kapat
+  }
+
+  free(line); // buffer temizle
+
+  // Reader'ı durdur
+  kill(reader_pid, SIGTERM);    // reader child'i öldür
+  waitpid(reader_pid, NULL, 0); // reader bitmesini bekle
+
+  // Çıkınca kendi FIFO'yu silmek istersen (temizlik)
+  unlink(my_fifo); // kendi fifo dosyasını sil
+
+  printf("Left chatroom '%s'.\n", room);
+  return SUCCESS;
+}
+
 // Builtin komutları çalıştırır (child içinde veya normalde çağrılabilir)
 // Başarılıysa SUCCESS, değilse UNKNOWN döner
 int run_builtin_child(struct command_t *command)
@@ -854,8 +1034,14 @@ int process_command(struct command_t *command)
 
   // repeat builtin: komutu N kez çalıştır
   if (strcmp(command->name, "repeat") == 0)
-  { 
+  {
     return run_repeat_builtin(command); // repeat'i çalıştır
+  }
+
+  // chatroom builtin: oda chatine girer
+  if (strcmp(command->name, "chatroom") == 0)
+  {
+    return run_chatroom_builtin(command); // chatroom'u çalıştır
   }
 
   // Eğer komut zinciri varsa (| kullanılmışsa), pipeline olarak çalıştır
