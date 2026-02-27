@@ -1,4 +1,6 @@
 # COMP304 Assignment 1 - Shell-ish
+
+Part 1
 Shell-ish
 This repository contains my implementation of the Shell-ish assignment for COMP 304 Operating Systems.
 
@@ -43,3 +45,42 @@ Notes
 
 Screenshots
 Screenshots of the implemented features are included in the imgs/ folder.
+
+
+
+
+
+
+
+
+
+Part 2 Features (I/O Redirection & Piping)
+I/O Redirection
+
+Shell-ish supports basic I/O redirection:
+
+>outputfile : redirect stdout to a file (create if not exists, truncate if exists)
+
+>>outputfile : redirect stdout to a file (append if exists, create if not)
+
+<inputfile : redirect stdin from a file
+
+Note: The provided parser supports redirection targets without spaces (e.g., >out.txt, not > out.txt).
+
+Example:
+echo hello >out.txt
+echo world >>out.txt
+wc <out.txt
+
+Piping
+
+Shell-ish supports piping using the | operator, including chained pipes.
+
+Examples:
+ls | wc
+ls -la | grep shellish
+ls -la | grep shellish | wc
+
+Screenshots
+
+Screenshots for Part 2 are available in the imgs/ folder.
