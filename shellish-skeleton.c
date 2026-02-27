@@ -439,6 +439,114 @@ char *resolve_executable_path(const char *cmd)
   return NULL;
 }
 
+// PIPELINE çalıştırır: cmd1 | cmd2 | cmd3 ... (command->next zinciri)
+// Her komut için child process oluşturur ve pipe ile birbirine bağlar.
+int execute_pipeline(struct command_t *cmd)
+{
+  int in_fd = STDIN_FILENO; // İlk komutun input'u normal stdin (fd=0)
+  int pipefd[2];            // pipefd[0]=read end, pipefd[1]=write end
+  pid_t pid;                // fork sonucu child pid
+  int status = 0;           // wait için status
+
+  struct command_t *current = cmd; // Zincirde gezen pointer
+
+  while (current != NULL)
+  { // Zincirde komut olduğu sürece dön
+    // Eğer son komut değilse pipe açmamız gerekiyor (çıktı bir sonraki komuta gidecek)
+    if (current->next != NULL)
+    {
+      if (pipe(pipefd) < 0)
+      {                 // pipe oluştur (başarısızsa hata)
+        perror("pipe"); // sistem hata mesajı bas
+        return UNKNOWN; // hata kodu dön
+      }
+    }
+    else
+    {
+      // Son komutta pipe yok: işaret amaçlı -1
+      pipefd[0] = -1;
+      pipefd[1] = -1;
+    }
+
+    pid = fork(); // Yeni child process oluştur
+    if (pid < 0)
+    {                 // fork başarısızsa
+      perror("fork"); // hata yaz
+      return UNKNOWN; // hata dön
+    }
+
+    if (pid == 0)
+    {
+      // =========================
+      // CHILD PROCESS
+      // =========================
+
+      // Eğer önceki komuttan gelen bir input fd varsa, stdin'e bağla
+      if (in_fd != STDIN_FILENO)
+      {                            // stdin değilse (yani pipe read end)
+        dup2(in_fd, STDIN_FILENO); // stdin(0) artık in_fd olsun
+        close(in_fd);              // eski fd'yi kapat
+      }
+
+      // Eğer son komut değilsek, stdout'u pipe'ın write end'ine bağla
+      if (current->next != NULL)
+      {                                 // bir sonraki komut varsa
+        close(pipefd[0]);               // child read end'i kullanmayacak, kapat
+        dup2(pipefd[1], STDOUT_FILENO); // stdout(1) -> pipe write
+        close(pipefd[1]);               // write end artık dup edildi, kapat
+      }
+
+      // Burada istersek redirection (<,>,>>) ile pipe'ı birlikte destekleyebiliriz.
+      // Şimdilik sadece pipe mantığını çalıştırıyoruz.
+
+      // Komutun gerçek çalıştırılabilir yolunu PATH içinde bul
+      char *resolved_path = resolve_executable_path(current->name);
+      if (resolved_path == NULL)
+      { // bulunamadıysa
+        printf("-%s: %s: command not found\n", sysname, current->name);
+        exit(127); // child'ı hata koduyla bitir
+      }
+
+      // Komutu çalıştır (başarılıysa bu satırın altına hiç gelmez)
+      execv(resolved_path, current->args);
+
+      // Eğer buraya geldiysek execv başarısız olmuştur
+      printf("-%s: %s: %s\n", sysname, current->name, strerror(errno));
+      free(resolved_path); // ayrılan path'i temizle
+      exit(127);           // child'ı bitir
+    }
+
+    // =========================
+    // PARENT PROCESS
+    // =========================
+
+    // Parent artık eski in_fd'yi tutmasın (zincir ilerledi)
+    if (in_fd != STDIN_FILENO)
+    {
+      close(in_fd); // önceki pipe read end kapanır
+    }
+
+    // Eğer son komut değilsek:
+    // - parent write end'i kapatır
+    // - next komut için in_fd = pipe read end olur
+    if (current->next != NULL)
+    {
+      close(pipefd[1]);  // parent write end'i kapatır
+      in_fd = pipefd[0]; // next komut stdin'i buradan okuyacak
+    }
+
+    current = current->next; // zincirde bir sonraki komuta geç
+  }
+
+  // Parent: tüm child process'lerin bitmesini bekle
+  while (wait(&status) > 0)
+  {
+    // burada sadece bekliyoruz
+  }
+
+  return SUCCESS; // pipeline başarıyla tamamlandı
+}
+
 int process_command(struct command_t *command)
 {
   int r;
@@ -457,6 +565,12 @@ int process_command(struct command_t *command)
         printf("-%s: %s: %s\n", sysname, command->name, strerror(errno));
       return SUCCESS;
     }
+  }
+
+  // Eğer komut zinciri varsa (| kullanılmışsa), pipeline olarak çalıştır
+  if (command->next != NULL)
+  {
+    return execute_pipeline(command); // pipe zincirini çalıştırıp çık
   }
 
   pid_t pid = fork();
@@ -493,7 +607,6 @@ int process_command(struct command_t *command)
      * redirects[2] = ">>output" -> stdout dosyaya yazılsın (append)
      * ===================================================== */
 
-     
     // <input : stdin'i dosyadan okumak için yönlendirme
     if (command->redirects[0])
     {                                                    // Eğer "<" ile input dosyası verilmişse
