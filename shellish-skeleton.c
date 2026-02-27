@@ -439,7 +439,6 @@ char *resolve_executable_path(const char *cmd)
   return NULL;
 }
 
-
 // Builtin kontrol fonksiyonu (cut/help/chatroom gibi komutlar builtin mi?)
 bool is_builtin_child(const char *name);
 
@@ -575,29 +574,187 @@ bool is_builtin_child(const char *name)
 // Başarılıysa SUCCESS, değilse UNKNOWN döner.
 int run_builtin_child(struct command_t *command);
 
-// Builtin komutları çalıştırır (child içinde çağrılır)
-// Not: Pipe içinde builtin çalıştırmak için exit kodu döndürür
+// "1,3,10" gibi alan listesini int dizisine çevirir
+// count: kaç tane alan çıktığını döndürür
+// Not: dönen dizi malloc/realloc ile ayrılır, sonunda free edilmelidir
+int *parse_fields_list(const char *s, int *count)
+{
+  *count = 0; // başlangıçta 0 alan
+
+  if (s == NULL)
+    return NULL; // liste yoksa NULL
+
+  char *copy = strdup(s); // strtok bozacağı için kopya al
+  if (copy == NULL)
+    return NULL; // kopya alınamazsa NULL
+
+  int *arr = NULL;               // dinamik alan dizisi
+  char *tok = strtok(copy, ","); // virgüle göre böl
+
+  while (tok != NULL)
+  {                    // token oldukça devam et
+    int v = atoi(tok); // token'ı sayıya çevir
+    if (v > 0)
+    {                                                 // sadece 1+ değerleri kabul et
+      arr = realloc(arr, sizeof(int) * (*count + 1)); // diziyi büyüt
+      arr[*count] = v;                                // yeni alanı ekle
+      (*count)++;                                     // sayacı artır
+    }
+    tok = strtok(NULL, ","); // sıradaki token
+  }
+
+  free(copy); // kopyayı temizle
+  return arr; // alan dizisini döndür
+}
+
+// cut builtin: stdin'den satır okur, delimiter'a göre böler, seçilen alanları basar
+int run_cut_builtin(struct command_t *command)
+{
+  char delim = '\t';             // varsayılan delimiter TAB
+  const char *fields_str = NULL; // -f/--fields ile gelecek liste
+
+  // Argümanları tara: -d/--delimiter ve -f/--fields
+  for (int i = 1; command->args[i] != NULL; i++)
+  { // args[0]=cut
+    // delimiter seçeneği
+    if ((strcmp(command->args[i], "-d") == 0 || strcmp(command->args[i], "--delimiter") == 0) &&
+        command->args[i + 1] != NULL)
+    {
+      delim = command->args[i + 1][0]; // tek karakter al
+      i++;                             // bir sonraki arg tüketildi
+    }
+    // fields seçeneği
+    else if ((strcmp(command->args[i], "-f") == 0 || strcmp(command->args[i], "--fields") == 0) &&
+             command->args[i + 1] != NULL)
+    {
+      fields_str = command->args[i + 1]; // "1,3,10" gibi liste
+      i++;                               // bir sonraki arg tüketildi
+    }
+  }
+
+  // -f verilmediyse hata
+  if (fields_str == NULL)
+  {
+    printf("-%s: cut: missing -f/--fields option\n", sysname); // hata mesajı
+    return UNKNOWN;                                            // başarısız
+  }
+
+  // Field listesini parse et
+  int fcount = 0;                                       // kaç field istendi
+  int *fields = parse_fields_list(fields_str, &fcount); // listeyi dizi yap
+  if (fields == NULL || fcount == 0)
+  {
+    printf("-%s: cut: invalid fields list\n", sysname); // hata mesajı
+    free(fields);                                       // temizlik
+    return UNKNOWN;                                     // başarısız
+  }
+
+  char *line = NULL; // getline buffer
+  size_t cap = 0;    // buffer kapasitesi
+
+  // stdin'den satır satır oku
+  while (getline(&line, &cap, stdin) != -1)
+  { // EOF olana kadar
+    // Satır sonundaki \n varsa kaldır
+    size_t len = strlen(line); // uzunluk
+    if (len > 0 && line[len - 1] == '\n')
+    {                       // \n var mı?
+      line[len - 1] = '\0'; // kaldır
+    }
+
+    // strtok bozacağı için satırı kopyala
+    char *copy = strdup(line); // satır kopyası
+    if (copy == NULL)
+      break; // kopya yoksa çık
+
+    // delimiter string'i hazırla (strtok için)
+    char dstr[2] = {delim, '\0'}; // ör: ":" veya "\t"
+
+    // Önce token sayısını bul (kaç alan var?)
+    int tok_count = 0;        // alan sayısı
+    char *tmp = strdup(copy); // saymak için kopya
+    if (tmp == NULL)
+    {
+      free(copy);
+      break;
+    } // kopya yoksa çık
+    char *t = strtok(tmp, dstr); // ilk token
+    while (t != NULL)
+    {
+      tok_count++;
+      t = strtok(NULL, dstr);
+    } // say
+    free(tmp); // sayma kopyasını temizle
+
+    // Token pointer dizisi oluştur
+    char **tokens = NULL; // token dizisi
+    if (tok_count > 0)
+      tokens = malloc(sizeof(char *) * tok_count); // yer ayır
+    int idx = 0;                                   // doldurma indexi
+
+    // Asıl split: tokenları diziye koy
+    t = strtok(copy, dstr); // split başlat
+    while (t != NULL)
+    {                         // token oldukça
+      tokens[idx++] = t;      // pointer'ı sakla
+      t = strtok(NULL, dstr); // sıradaki token
+    }
+
+    // İstenen field'ları sırayla bas (1-based)
+    for (int k = 0; k < fcount; k++)
+    {                       // her istenen field
+      int want = fields[k]; // 1-based alan no
+      const char *out = ""; // default boş
+
+      if (want >= 1 && want <= tok_count)
+      {                         // aralık kontrolü
+        out = tokens[want - 1]; // 1-based -> 0-based
+      }
+
+      if (k > 0)
+        putchar(delim);   // araya delimiter koy
+      fputs(out, stdout); // alanı yaz
+    }
+
+    putchar('\n'); // satır sonu
+
+    free(tokens); // token dizisini temizle
+    free(copy);   // satır kopyasını temizle
+  }
+
+  free(fields);   // fields dizisini temizle
+  free(line);     // getline buffer temizle
+  return SUCCESS; // başarılı
+}
+
+// Builtin komutları çalıştırır (child içinde veya normalde çağrılabilir)
+// Başarılıysa SUCCESS, değilse UNKNOWN döner
 int run_builtin_child(struct command_t *command)
 {
-  // Güvenlik: command veya name yoksa hata dön
+  // Güvenlik: command veya name yoksa builtin yok
   if (command == NULL || command->name == NULL)
   {
-    return UNKNOWN; // builtin tanınmadı
+    return UNKNOWN; // tanımsız
   }
 
-  // help builtin: desteklenen komutları ekrana basar
+  // help builtin: komut listesini basar
   if (strcmp(command->name, "help") == 0)
   {
-    printf("Shell-ish builtins:\n");                            // başlık yaz
-    printf("  cd <dir>\n");                                     // cd bilgisini yaz
-    printf("  exit\n");                                         // exit bilgisini yaz
-    printf("  cut -d X -f list   (or --delimiter/--fields)\n"); // cut bilgisini yaz
-    printf("  chatroom <room> <user>\n");                       // chatroom (sonra yazacağız)
-    printf("  help\n");                                         // help bilgisini yaz
-    return SUCCESS;                                             // başarıyla bitti
+    printf("Shell-ish builtins:\n");                            // başlık
+    printf("  cd <dir>\n");                                     // cd
+    printf("  exit\n");                                         // exit
+    printf("  cut -d X -f list   (or --delimiter/--fields)\n"); // cut
+    printf("  chatroom <room> <user>\n");                       // chatroom (sonra)
+    printf("  help\n");                                         // help
+    return SUCCESS;                                             // başarılı
   }
 
-  // cut builtin daha sonra eklenecek
+  // cut builtin: asıl cut fonksiyonunu çağır
+  if (strcmp(command->name, "cut") == 0)
+  {
+    return run_cut_builtin(command); // cut'ı çalıştır
+  }
+
   // chatroom builtin daha sonra eklenecek
   return UNKNOWN; // bu isimde builtin yok
 }
@@ -621,9 +778,16 @@ int process_command(struct command_t *command)
       return SUCCESS;
     }
   }
-    // help builtin: komut listesini bas (pipe olmadan da çalışsın)
-  if (strcmp(command->name, "help") == 0) {
-    return run_builtin_child(command);   // help'i çalıştır
+  // help builtin: komut listesini bas (pipe olmadan da çalışsın)
+  if (strcmp(command->name, "help") == 0)
+  {
+    return run_builtin_child(command); // help'i çalıştır
+  }
+
+  // cut builtin: stdin'den okuyup field'ları basar
+  if (strcmp(command->name, "cut") == 0)
+  {
+    return run_cut_builtin(command); // cut fonksiyonunu çağır
   }
 
   // Eğer komut zinciri varsa (| kullanılmışsa), pipeline olarak çalıştır
