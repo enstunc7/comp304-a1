@@ -6,7 +6,7 @@
 #include <sys/wait.h>
 #include <termios.h> // termios, TCSANOW, ECHO, ICANON
 #include <unistd.h>
-#include <fcntl.h>  // open(), O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND
+#include <fcntl.h> // open(), O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND
 const char *sysname = "shellish";
 
 enum return_codes
@@ -485,6 +485,58 @@ int process_command(struct command_t *command)
     {
       printf("-%s: %s: command not found\n", sysname, command->name);
       exit(127);
+    }
+
+    /* ===== Part 2: I/O Redirection (Kısa açıklamalı) =====
+     * redirects[0] = "<input"   -> stdin dosyadan okunsun
+     * redirects[1] = ">output"  -> stdout dosyaya yazılsın (truncate)
+     * redirects[2] = ">>output" -> stdout dosyaya yazılsın (append)
+     * ===================================================== */
+
+    // <input : stdin'i dosyadan okumak için yönlendirme
+    if (command->redirects[0])
+    {                                                    // Eğer "<" ile input dosyası verilmişse
+      int in_fd = open(command->redirects[0], O_RDONLY); // Dosyayı sadece okuma modunda aç
+      if (in_fd < 0)
+      { // Açma başarısızsa
+        printf("-%s: input dosyasi acilamadi %s: %s\n",
+               sysname, command->redirects[0], strerror(errno)); // Hata mesajı yaz
+        exit(1);                                                 // Child process'i hata ile bitir
+      }
+      dup2(in_fd, STDIN_FILENO); // stdin(0) artık bu dosyadan gelsin
+      close(in_fd);              // Artık gerek kalmayan fd'yi kapat
+    }
+
+    // >output : stdout'u dosyaya yazmak (truncate: varsa içini sıfırlar)
+    if (command->redirects[1])
+    {                                                 // Eğer ">" ile output dosyası verilmişse
+      int out_fd = open(command->redirects[1],        // Output dosyasını aç
+                        O_WRONLY | O_CREAT | O_TRUNC, // yazma + yoksa oluştur + varsa sıfırla
+                        0644);                        // dosya izinleri (rw-r--r--)
+      if (out_fd < 0)
+      { // Açma başarısızsa
+        printf("-%s: output dosyasi acilamadi %s: %s\n",
+               sysname, command->redirects[1], strerror(errno)); // Hata mesajı yaz
+        exit(1);                                                 // Child process'i hata ile bitir
+      }
+      dup2(out_fd, STDOUT_FILENO); // stdout(1) artık bu dosyaya yazsın
+      close(out_fd);               // Artık gerek kalmayan fd'yi kapat
+    }
+
+    // >>output : stdout'u dosyaya yazmak (append: sona ekler)
+    if (command->redirects[2])
+    {                                                  // Eğer ">>" ile append dosyası verilmişse
+      int app_fd = open(command->redirects[2],         // Append dosyasını aç
+                        O_WRONLY | O_CREAT | O_APPEND, // yazma + yoksa oluştur + sona ekle
+                        0644);                         // dosya izinleri
+      if (app_fd < 0)
+      { // Açma başarısızsa
+        printf("-%s: append dosyasi acilamadi %s: %s\n",
+               sysname, command->redirects[2], strerror(errno)); // Hata mesajı yaz
+        exit(1);                                                 // Child process'i hata ile bitir
+      }
+      dup2(app_fd, STDOUT_FILENO); // stdout(1) artık bu dosyaya (sona ekleyerek) yazsın
+      close(app_fd);               // Artık gerek kalmayan fd'yi kapat
     }
 
     // Komutun gerçek path'i bulunduysa execv ile çalıştır.
