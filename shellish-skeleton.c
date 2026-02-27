@@ -493,6 +493,7 @@ int process_command(struct command_t *command)
      * redirects[2] = ">>output" -> stdout dosyaya yazılsın (append)
      * ===================================================== */
 
+     
     // <input : stdin'i dosyadan okumak için yönlendirme
     if (command->redirects[0])
     {                                                    // Eğer "<" ile input dosyası verilmişse
