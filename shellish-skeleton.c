@@ -567,6 +567,7 @@ bool is_builtin_child(const char *name)
     return false;
   return (strcmp(name, "cut") == 0) ||
          (strcmp(name, "help") == 0) ||
+         (strcmp(name, "repeat") == 0) ||
          (strcmp(name, "chatroom") == 0); // chatroom'u sonra yazacağız
 }
 
@@ -727,6 +728,55 @@ int run_cut_builtin(struct command_t *command)
   return SUCCESS; // başarılı
 }
 
+// repeat builtin: komutu N kez çalıştırır
+int run_repeat_builtin(struct command_t *command)
+{
+  // Kullanım: repeat N cmd args...
+  if (command->args[1] == NULL || command->args[2] == NULL)
+  {
+    printf("-%s: repeat: usage: repeat N <command> [args...]\n", sysname); // kullanım mesajı
+    return UNKNOWN;                                                        // hata
+  }
+
+  int n = atoi(command->args[1]); // N sayısını al
+  if (n <= 0)
+  {
+    printf("-%s: repeat: N must be > 0\n", sysname); // N kontrolü
+    return UNKNOWN;
+  }
+
+  // Çalıştırılacak komut adı: args[2]
+  const char *cmd = command->args[2];
+
+  // repeat için yeni argv oluştur: [cmd, args3..., NULL]
+  // command->args şu an: [repeat, N, cmd, a1, a2, ..., NULL]
+  char **new_argv = &command->args[2]; // cmd'den itibaren başlat
+
+  // Komutun path'ini çöz
+  char *resolved_path = resolve_executable_path(cmd); // PATH içinde bul
+  if (resolved_path == NULL)
+  {
+    printf("-%s: %s: command not found\n", sysname, cmd); // bulunamadı
+    return UNKNOWN;
+  }
+
+  // N kez çalıştır
+  for (int i = 0; i < n; i++)
+  {
+    pid_t pid = fork(); // child oluştur
+    if (pid == 0)
+    {
+      execv(resolved_path, new_argv);                         // komutu çalıştır
+      printf("-%s: %s: %s\n", sysname, cmd, strerror(errno)); // execv hata
+      exit(127);
+    }
+    waitpid(pid, NULL, 0); // her turda bitmesini bekle
+  }
+
+  free(resolved_path); // path'i temizle
+  return SUCCESS;      // başarılı
+}
+
 // Builtin komutları çalıştırır (child içinde veya normalde çağrılabilir)
 // Başarılıysa SUCCESS, değilse UNKNOWN döner
 int run_builtin_child(struct command_t *command)
@@ -755,9 +805,17 @@ int run_builtin_child(struct command_t *command)
     return run_cut_builtin(command); // cut'ı çalıştır
   }
 
+  // repeat builtin: komutu N kez çalıştır
+  if (strcmp(command->name, "repeat") == 0)
+  {
+    return run_repeat_builtin(command); // repeat'i çalıştır
+  }
+
   // chatroom builtin daha sonra eklenecek
   return UNKNOWN; // bu isimde builtin yok
 }
+
+// repeat builtin: "repeat N cmd args..." komutunu N kez çalıştırır
 
 int process_command(struct command_t *command)
 {
@@ -788,6 +846,12 @@ int process_command(struct command_t *command)
   if (strcmp(command->name, "cut") == 0)
   {
     return run_cut_builtin(command); // cut fonksiyonunu çağır
+  }
+
+  // repeat builtin: komutu N kez çalıştır
+  if (strcmp(command->name, "repeat") == 0)
+  { 
+    return run_repeat_builtin(command); // repeat'i çalıştır
   }
 
   // Eğer komut zinciri varsa (| kullanılmışsa), pipeline olarak çalıştır
