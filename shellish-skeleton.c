@@ -7,6 +7,10 @@
 #include <termios.h> // termios, TCSANOW, ECHO, ICANON
 #include <unistd.h>
 #include <fcntl.h> // open(), O_RDONLY, O_WRONLY, O_CREAT, O_TRUNC, O_APPEND
+
+#include <dirent.h>   // opendir, readdir
+#include <signal.h>   // kill, SIGTERM
+#include <sys/stat.h> // mkdir, mkfifo
 const char *sysname = "shellish";
 
 enum return_codes
@@ -439,6 +443,12 @@ char *resolve_executable_path(const char *cmd)
   return NULL;
 }
 
+// Builtin kontrol fonksiyonu (cut/help/chatroom gibi komutlar builtin mi?)
+bool is_builtin_child(const char *name);
+
+// Builtin komut çalıştırma fonksiyonu (child içinde çağrılacak)
+int run_builtin_child(struct command_t *command);
+
 // PIPELINE çalıştırır: cmd1 | cmd2 | cmd3 ... (command->next zinciri)
 // Her komut için child process oluşturur ve pipe ile birbirine bağlar.
 int execute_pipeline(struct command_t *cmd)
@@ -499,6 +509,13 @@ int execute_pipeline(struct command_t *cmd)
       // Burada istersek redirection (<,>,>>) ile pipe'ı birlikte destekleyebiliriz.
       // Şimdilik sadece pipe mantığını çalıştırıyoruz.
 
+      // Eğer komut builtin ise (cut/help/chatroom), execv yerine builtin çalıştır
+      if (is_builtin_child(current->name))
+      {                                      // builtin mi kontrol et
+        int br = run_builtin_child(current); // builtin'i çalıştır
+        exit(br == SUCCESS ? 0 : 1);         // başarılıysa 0, değilse 1 ile çık
+      }
+
       // Komutun gerçek çalıştırılabilir yolunu PATH içinde bul
       char *resolved_path = resolve_executable_path(current->name);
       if (resolved_path == NULL)
@@ -547,6 +564,443 @@ int execute_pipeline(struct command_t *cmd)
   return SUCCESS; // pipeline başarıyla tamamlandı
 }
 
+// Builtin mi? (cut/chatroom/custom burada sayılacak)
+bool is_builtin_child(const char *name)
+{
+  if (!name)
+    return false;
+  return (strcmp(name, "cut") == 0) ||
+         (strcmp(name, "help") == 0) ||
+         (strcmp(name, "repeat") == 0) ||
+         (strcmp(name, "chatroom") == 0); // chatroom'u sonra yazacağız
+}
+
+// Builtin komutu çalıştırır (child içinde çağrılacak şekilde tasarlanır)
+// Başarılıysa SUCCESS, değilse UNKNOWN döner.
+int run_builtin_child(struct command_t *command);
+
+// "1,3,10" gibi alan listesini int dizisine çevirir
+// count: kaç tane alan çıktığını döndürür
+// Not: dönen dizi malloc/realloc ile ayrılır, sonunda free edilmelidir
+int *parse_fields_list(const char *s, int *count)
+{
+  *count = 0; // başlangıçta 0 alan
+
+  if (s == NULL)
+    return NULL; // liste yoksa NULL
+
+  char *copy = strdup(s); // strtok bozacağı için kopya al
+  if (copy == NULL)
+    return NULL; // kopya alınamazsa NULL
+
+  int *arr = NULL;               // dinamik alan dizisi
+  char *tok = strtok(copy, ","); // virgüle göre böl
+
+  while (tok != NULL)
+  {                    // token oldukça devam et
+    int v = atoi(tok); // token'ı sayıya çevir
+    if (v > 0)
+    {                                                 // sadece 1+ değerleri kabul et
+      arr = realloc(arr, sizeof(int) * (*count + 1)); // diziyi büyüt
+      arr[*count] = v;                                // yeni alanı ekle
+      (*count)++;                                     // sayacı artır
+    }
+    tok = strtok(NULL, ","); // sıradaki token
+  }
+
+  free(copy); // kopyayı temizle
+  return arr; // alan dizisini döndür
+}
+
+// cut builtin: stdin'den satır okur, delimiter'a göre böler, seçilen alanları basar
+int run_cut_builtin(struct command_t *command)
+{
+  char delim = '\t';             // varsayılan delimiter TAB
+  const char *fields_str = NULL; // -f/--fields ile gelecek liste
+
+  // Argümanları tara: -d/--delimiter ve -f/--fields
+  for (int i = 1; command->args[i] != NULL; i++)
+  { // args[0]=cut
+    // delimiter seçeneği
+    if ((strcmp(command->args[i], "-d") == 0 || strcmp(command->args[i], "--delimiter") == 0) &&
+        command->args[i + 1] != NULL)
+    {
+      delim = command->args[i + 1][0]; // tek karakter al
+      i++;                             // bir sonraki arg tüketildi
+    }
+    // fields seçeneği
+    else if ((strcmp(command->args[i], "-f") == 0 || strcmp(command->args[i], "--fields") == 0) &&
+             command->args[i + 1] != NULL)
+    {
+      fields_str = command->args[i + 1]; // "1,3,10" gibi liste
+      i++;                               // bir sonraki arg tüketildi
+    }
+  }
+
+  // -f verilmediyse hata
+  if (fields_str == NULL)
+  {
+    printf("-%s: cut: missing -f/--fields option\n", sysname); // hata mesajı
+    return UNKNOWN;                                            // başarısız
+  }
+
+  // Field listesini parse et
+  int fcount = 0;                                       // kaç field istendi
+  int *fields = parse_fields_list(fields_str, &fcount); // listeyi dizi yap
+  if (fields == NULL || fcount == 0)
+  {
+    printf("-%s: cut: invalid fields list\n", sysname); // hata mesajı
+    free(fields);                                       // temizlik
+    return UNKNOWN;                                     // başarısız
+  }
+
+  char *line = NULL; // getline buffer
+  size_t cap = 0;    // buffer kapasitesi
+
+  // stdin'den satır satır oku
+  while (getline(&line, &cap, stdin) != -1)
+  { // EOF olana kadar
+    // Satır sonundaki \n varsa kaldır
+    size_t len = strlen(line); // uzunluk
+    if (len > 0 && line[len - 1] == '\n')
+    {                       // \n var mı?
+      line[len - 1] = '\0'; // kaldır
+    }
+
+    // strtok bozacağı için satırı kopyala
+    char *copy = strdup(line); // satır kopyası
+    if (copy == NULL)
+      break; // kopya yoksa çık
+
+    // delimiter string'i hazırla (strtok için)
+    char dstr[2] = {delim, '\0'}; // ör: ":" veya "\t"
+
+    // Önce token sayısını bul (kaç alan var?)
+    int tok_count = 0;        // alan sayısı
+    char *tmp = strdup(copy); // saymak için kopya
+    if (tmp == NULL)
+    {
+      free(copy);
+      break;
+    } // kopya yoksa çık
+    char *t = strtok(tmp, dstr); // ilk token
+    while (t != NULL)
+    {
+      tok_count++;
+      t = strtok(NULL, dstr);
+    } // say
+    free(tmp); // sayma kopyasını temizle
+
+    // Token pointer dizisi oluştur
+    char **tokens = NULL; // token dizisi
+    if (tok_count > 0)
+      tokens = malloc(sizeof(char *) * tok_count); // yer ayır
+    int idx = 0;                                   // doldurma indexi
+
+    // Asıl split: tokenları diziye koy
+    t = strtok(copy, dstr); // split başlat
+    while (t != NULL)
+    {                         // token oldukça
+      tokens[idx++] = t;      // pointer'ı sakla
+      t = strtok(NULL, dstr); // sıradaki token
+    }
+
+    // İstenen field'ları sırayla bas (1-based)
+    for (int k = 0; k < fcount; k++)
+    {                       // her istenen field
+      int want = fields[k]; // 1-based alan no
+      const char *out = ""; // default boş
+
+      if (want >= 1 && want <= tok_count)
+      {                         // aralık kontrolü
+        out = tokens[want - 1]; // 1-based -> 0-based
+      }
+
+      if (k > 0)
+        putchar(delim);   // araya delimiter koy
+      fputs(out, stdout); // alanı yaz
+    }
+
+    putchar('\n'); // satır sonu
+
+    free(tokens); // token dizisini temizle
+    free(copy);   // satır kopyasını temizle
+  }
+
+  free(fields);   // fields dizisini temizle
+  free(line);     // getline buffer temizle
+  return SUCCESS; // başarılı
+}
+
+// repeat builtin: komutu N kez çalıştırır
+int run_repeat_builtin(struct command_t *command)
+{
+  // Kullanım: repeat N cmd args...
+  if (command->args[1] == NULL || command->args[2] == NULL)
+  {
+    printf("-%s: repeat: usage: repeat N <command> [args...]\n", sysname); // kullanım mesajı
+    return UNKNOWN;                                                        // hata
+  }
+
+  int n = atoi(command->args[1]); // N sayısını al
+  if (n <= 0)
+  {
+    printf("-%s: repeat: N must be > 0\n", sysname); // N kontrolü
+    return UNKNOWN;
+  }
+
+  // Çalıştırılacak komut adı: args[2]
+  const char *cmd = command->args[2];
+
+  // repeat için yeni argv oluştur: [cmd, args3..., NULL]
+  // command->args şu an: [repeat, N, cmd, a1, a2, ..., NULL]
+  char **new_argv = &command->args[2]; // cmd'den itibaren başlat
+
+  // Komutun path'ini çöz
+  char *resolved_path = resolve_executable_path(cmd); // PATH içinde bul
+  if (resolved_path == NULL)
+  {
+    printf("-%s: %s: command not found\n", sysname, cmd); // bulunamadı
+    return UNKNOWN;
+  }
+
+  // N kez çalıştır
+  for (int i = 0; i < n; i++)
+  {
+    pid_t pid = fork(); // child oluştur
+    if (pid == 0)
+    {
+      execv(resolved_path, new_argv);                         // komutu çalıştır
+      printf("-%s: %s: %s\n", sysname, cmd, strerror(errno)); // execv hata
+      exit(127);
+    }
+    waitpid(pid, NULL, 0); // her turda bitmesini bekle
+  }
+
+  free(resolved_path); // path'i temizle
+  return SUCCESS;      // başarılı
+}
+
+// chatroom builtin: FIFO tabanlı basit chat
+int run_chatroom_builtin(struct command_t *command)
+{
+  // Kullanım kontrolü: chatroom <roomname> <username>
+  if (command->args[1] == NULL || command->args[2] == NULL)
+  {
+    printf("-%s: chatroom: usage: chatroom <roomname> <username>\n", sysname);
+    return UNKNOWN;
+  }
+
+  const char *room = command->args[1]; // oda adı
+  const char *user = command->args[2]; // kullanıcı adı
+
+  // Oda klasörü yolu: /tmp/chatroom-<room>
+  char room_dir[512];
+  snprintf(room_dir, sizeof(room_dir), "/tmp/chatroom-%s", room);
+
+  // Kullanıcının FIFO yolu: /tmp/chatroom-<room>/<username>
+  char my_fifo[512];
+  // my_fifo yolu buffer'a sığdı mı kontrol et
+  int n1 = snprintf(my_fifo, sizeof(my_fifo), "%s/%s", room_dir, user); // yolu yaz
+  if (n1 < 0 || n1 >= (int)sizeof(my_fifo))
+  {                                                    // sığmadıysa
+    printf("-%s: chatroom: path too long\n", sysname); // hata bas
+    return UNKNOWN;                                    // çık
+  }
+
+  // 1) Oda klasörünü oluştur (varsa sorun değil)
+  if (mkdir(room_dir, 0777) == -1)
+  { // klasör oluşturmayı dene
+    if (errno != EEXIST)
+    { // zaten varsa sorun değil
+      printf("-%s: chatroom: mkdir failed: %s\n", sysname, strerror(errno));
+      return UNKNOWN;
+    }
+  }
+
+  // 2) Kullanıcı FIFO'sunu oluştur (varsa sorun değil)
+  if (mkfifo(my_fifo, 0666) == -1)
+  { // fifo oluşturmayı dene
+    if (errno != EEXIST)
+    { // zaten varsa sorun değil
+      printf("-%s: chatroom: mkfifo failed: %s\n", sysname, strerror(errno));
+      return UNKNOWN;
+    }
+  }
+
+  // 3) Reader child: kendi FIFO'muzdan gelen mesajları okuyup ekrana basacak
+  pid_t reader_pid = fork(); // okuyucu process
+  if (reader_pid < 0)
+  {
+    printf("-%s: chatroom: fork failed: %s\n", sysname, strerror(errno));
+    return UNKNOWN;
+  }
+
+  if (reader_pid == 0)
+  {
+    // ===== CHILD (READER) =====
+
+    // FIFO'yu O_RDWR açıyoruz ki open bloklamasın ve read beklesin
+    int fd = open(my_fifo, O_RDWR); // hem okuma hem yazma aç
+    if (fd < 0)
+    {
+      printf("-%s: chatroom: open fifo failed: %s\n", sysname, strerror(errno));
+      exit(1);
+    }
+
+    char buf[1024]; // okuma bufferı
+    while (1)
+    {
+      ssize_t n = read(fd, buf, sizeof(buf) - 1); // fifo'dan oku
+      if (n > 0)
+      {
+        buf[n] = '\0';      // string sonu
+        fputs(buf, stdout); // ekrana bas
+        fflush(stdout);     // hemen göster
+      }
+      // n == 0 ise (EOF gibi) burada takılabilir; O_RDWR olduğundan genelde bekler
+      // n < 0 ise hata olabilir, devam et
+    }
+  }
+
+  // ===== PARENT (WRITER + INPUT LOOP) =====
+  printf("Entered chatroom '%s' as '%s'. Type /exit to leave.\n", room, user);
+
+  // Kullanıcıdan satır satır mesaj al
+  char *line = NULL; // getline buffer
+  size_t cap = 0;    // buffer kapasitesi
+
+  while (1)
+  {
+    printf("chat> "); // chat prompt
+    fflush(stdout);
+
+    ssize_t r = getline(&line, &cap, stdin); // kullanıcıdan oku
+    if (r == -1)
+    { // Ctrl+D / EOF
+      break;
+    }
+
+    // Satır sonundaki '\n' varsa temizle
+    if (r > 0 && line[r - 1] == '\n')
+    {
+      line[r - 1] = '\0';
+    }
+
+    // Çıkış komutu
+    if (strcmp(line, "/exit") == 0)
+    {
+      break;
+    }
+
+    // Gönderilecek mesaj formatı: "username: mesaj\n"
+    char msg[1200];
+    snprintf(msg, sizeof(msg), "%s: %s\n", user, line);
+
+    // Oda klasörünü aç, içindeki diğer FIFO'lara mesaj gönder
+    DIR *d = opendir(room_dir); // klasörü aç
+    if (d == NULL)
+    {
+      printf("-%s: chatroom: opendir failed: %s\n", sysname, strerror(errno));
+      continue;
+    }
+
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL)
+    { // tüm dosyaları gez
+      // "." ve ".." geç
+      if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+      {
+        continue;
+      }
+
+      // Kendi FIFO'na mesaj göndermeyelim
+      if (strcmp(ent->d_name, user) == 0)
+      {
+        continue;
+      }
+
+      // Hedef FIFO yolu
+      char target_fifo[512];
+      // target_fifo yolu buffer'a sığdı mı kontrol et
+      int n2 = snprintf(target_fifo, sizeof(target_fifo), "%s/%s", room_dir, ent->d_name); // yolu yaz
+      if (n2 < 0 || n2 >= (int)sizeof(target_fifo))
+      {           // sığmadıysa
+        continue; // bunu geç
+      }
+
+      // Her hedefe ayrı child ile yaz (ödev istiyordu)
+      pid_t wp = fork(); // writer child
+      if (wp == 0)
+      {
+        // Hedef FIFO'yu yazma modunda aç (non-blocking: karşı taraf yoksa takılmasın)
+        int wfd = open(target_fifo, O_WRONLY | O_NONBLOCK);
+        if (wfd >= 0)
+        {
+          write(wfd, msg, strlen(msg)); // mesajı yaz
+          close(wfd);                   // kapat
+        }
+        exit(0); // writer child çık
+      }
+      // parent burada beklemiyor (çok child olursa zombie olabilir; basitçe ignore edebiliriz)
+    }
+
+    closedir(d); // klasörü kapat
+  }
+
+  free(line); // buffer temizle
+
+  // Reader'ı durdur
+  kill(reader_pid, SIGTERM);    // reader child'i öldür
+  waitpid(reader_pid, NULL, 0); // reader bitmesini bekle
+
+  // Çıkınca kendi FIFO'yu silmek istersen (temizlik)
+  unlink(my_fifo); // kendi fifo dosyasını sil
+
+  printf("Left chatroom '%s'.\n", room);
+  return SUCCESS;
+}
+
+// Builtin komutları çalıştırır (child içinde veya normalde çağrılabilir)
+// Başarılıysa SUCCESS, değilse UNKNOWN döner
+int run_builtin_child(struct command_t *command)
+{
+  // Güvenlik: command veya name yoksa builtin yok
+  if (command == NULL || command->name == NULL)
+  {
+    return UNKNOWN; // tanımsız
+  }
+
+  // help builtin: komut listesini basar
+  if (strcmp(command->name, "help") == 0)
+  {
+    printf("Shell-ish builtins:\n");                            // başlık
+    printf("  cd <dir>\n");                                     // cd
+    printf("  exit\n");                                         // exit
+    printf("  cut -d X -f list   (or --delimiter/--fields)\n"); // cut
+    printf("  chatroom <room> <user>\n");                       // chatroom (sonra)
+    printf("  help\n");                                         // help
+    return SUCCESS;                                             // başarılı
+  }
+
+  // cut builtin: asıl cut fonksiyonunu çağır
+  if (strcmp(command->name, "cut") == 0)
+  {
+    return run_cut_builtin(command); // cut'ı çalıştır
+  }
+
+  // repeat builtin: komutu N kez çalıştır
+  if (strcmp(command->name, "repeat") == 0)
+  {
+    return run_repeat_builtin(command); // repeat'i çalıştır
+  }
+
+  // chatroom builtin daha sonra eklenecek
+  return UNKNOWN; // bu isimde builtin yok
+}
+
+// repeat builtin: "repeat N cmd args..." komutunu N kez çalıştırır
+
 int process_command(struct command_t *command)
 {
   int r;
@@ -565,6 +1019,29 @@ int process_command(struct command_t *command)
         printf("-%s: %s: %s\n", sysname, command->name, strerror(errno));
       return SUCCESS;
     }
+  }
+  // help builtin: komut listesini bas (pipe olmadan da çalışsın)
+  if (strcmp(command->name, "help") == 0)
+  {
+    return run_builtin_child(command); // help'i çalıştır
+  }
+
+  // cut builtin: stdin'den okuyup field'ları basar
+  if (strcmp(command->name, "cut") == 0)
+  {
+    return run_cut_builtin(command); // cut fonksiyonunu çağır
+  }
+
+  // repeat builtin: komutu N kez çalıştır
+  if (strcmp(command->name, "repeat") == 0)
+  {
+    return run_repeat_builtin(command); // repeat'i çalıştır
+  }
+
+  // chatroom builtin: oda chatine girer
+  if (strcmp(command->name, "chatroom") == 0)
+  {
+    return run_chatroom_builtin(command); // chatroom'u çalıştır
   }
 
   // Eğer komut zinciri varsa (| kullanılmışsa), pipeline olarak çalıştır
