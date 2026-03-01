@@ -84,3 +84,44 @@ ls -la | grep shellish | wc
 Screenshots
 
 Screenshots for Part 2 are available in the imgs/ folder.
+
+
+
+
+
+
+## Part 3 Features (New Built-in Commands)
+
+### cut (built-in)
+A simplified version of UNIX `cut` is implemented as a built-in command.
+It reads from standard input and prints only the selected fields.
+
+- Default delimiter: TAB
+- `-d X` / `--delimiter X` : use character `X` as delimiter
+- `-f list` / `--fields list` : comma-separated 1-based field indices (e.g., `1,3,10`)
+
+Example:
+cat /etc/passwd | cut -d ":" -f 1,6
+
+### chatroom (built-in)
+A simple group chat command using named pipes (FIFOs).
+
+Usage:
+chatroom <roomname> <username>
+
+- Room directory: /tmp/chatroom-<roomname>/
+- Each user has a FIFO: /tmp/chatroom-<roomname>/<username>
+- Type `/exit` to leave the chatroom
+
+### Custom command: repeat (built-in)
+A custom built-in command that runs another command multiple times.
+
+Usage:
+repeat N <command> [args...]
+
+Examples:
+repeat 3 date
+repeat 2 ls
+
+### Screenshots
+Screenshots for Part 3 are included in the `imgs/` folder.
